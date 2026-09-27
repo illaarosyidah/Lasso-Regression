@@ -1,0 +1,463 @@
+---
+title: "Lasso Regression"
+output: html_document
+date: "2026-09-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Lasso Regression (Benchmarking dan Validasi)
+
+```{r Setup}
+library(tidymodels)
+library(glmnet)
+library(dplyr)
+
+set.seed(123)
+```
+
+```{r Load Data dan Cek Multikolinearitas}
+data <- read.csv(file.choose(),header=T,sep=";",dec=",")
+head(data)
+summary(data)
+colSums(is.na(data))
+
+library(car)
+model <- lm(Y1 ~ X1 + X2 + X3 + X4 + X5 + X6 + X7 + X8, data = data)
+alias(model)
+
+if (any(is.na(coef(model)))) {
+  cat("VIF tidak bisa dihitung karena ada korelasi sempurna (Aliased coefficients).\n")
+  cat("Terdapat variabel yang redundan 100% secara matematis.\n")
+} else {
+  # Jika aman, hitung dan tampilkan VIF
+  nilai_vif <- vif(model)
+  print(sort(nilai_vif, decreasing = TRUE))
+}
+
+```
+
+```{r Split dan Cross Validation}
+data_y1 <- data%>%select(-Y2)
+data_y2 <- data%>%select(-Y1)
+head(data_y2)
+
+split_HL <- initial_split(data_y1, prop = 0.8, strata = Y1)
+train_HL<- training(split_HL)
+test_HL <- testing(split_HL)
+
+split_CL <- initial_split(data_y2, prop = 0.8, strata = Y2)
+train_CL<- training(split_CL)
+test_CL <- testing(split_CL)
+
+cv_HL <- vfold_cv(train_HL, v = 5)
+cv_CL <- vfold_cv(train_CL, v = 5)
+
+```
+
+```{r Recip, Lasso Regression, dan Tuning}
+rec_HL <- recipe(Y1~., data = train_HL) %>% step_normalize(all_numeric_predictors())
+rec_CL <- recipe(Y2~., data = train_CL) %>% step_normalize(all_numeric_predictors())
+
+lasso_spec <- linear_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression")
+
+wf_HL <- workflow() %>%add_recipe(rec_HL) %>% add_model(lasso_spec)
+wf_CL <- workflow() %>%add_recipe(rec_CL) %>% add_model(lasso_spec)
+
+penalty_grid <- grid_regular(penalty(range = c(-4, 1)), levels = 50)
+
+tune_HL<- tune_grid(wf_HL, resamples =cv_HL, grid = penalty_grid, metrics = metric_set(rmse,rsq))
+tune_CL<- tune_grid(wf_CL, resamples =cv_CL, grid = penalty_grid, metrics = metric_set(rmse,rsq))
+
+best_HL <- select_best(tune_HL, metric = "rmse")
+best_HL
+best_CL <- select_best(tune_CL, metric = "rmse")
+best_CL
+
+```
+
+```{r Lasso Final}
+finalwf_HL <- finalize_workflow(wf_HL, best_HL)
+finalwf_CL <- finalize_workflow(wf_CL, best_CL)
+
+finalfit_HL <- last_fit(finalwf_HL, split = split_HL)
+finalfit_CL <- last_fit(finalwf_CL, split = split_CL)
+
+finalHL_metrics <- collect_metrics(finalfit_HL)
+finalHL_metrics
+finalCL_metrics <- collect_metrics(finalfit_CL)
+finalCL_metrics
+
+model_HL <- extract_fit_parsnip(finalfit_HL)
+tidy(model_HL) %>% 
+  filter(estimate != 0) %>% 
+  arrange(desc(abs(estimate))) %>% 
+  print()
+model_CL <- extract_fit_parsnip(finalfit_CL)
+tidy(model_CL) %>% 
+  filter(estimate != 0) %>% 
+  arrange(desc(abs(estimate))) %>% 
+  print()
+
+```
+
+```{r Ridge Regression}
+ridge_spec <- linear_reg(penalty = tune(),mixture = 0) %>%
+  set_engine("glmnet") %>%
+  set_mode("regression")
+
+wfHL_ridge <- workflow() %>% add_recipe(rec_HL) %>% add_model(ridge_spec)
+wfCL_ridge <- workflow() %>% add_recipe(rec_CL) %>% add_model(ridge_spec)
+
+tuneHL_ridge <-tune_grid(wfHL_ridge, resamples = cv_HL, grid = penalty_grid, metrics = metric_set(rmse,rsq))
+tuneCL_ridge <- tune_grid(wfCL_ridge, resamples = cv_CL, grid = penalty_grid, metrics = metric_set(rmse,rsq))
+
+bestHL_ridge<- select_best(tuneHL_ridge, metric = "rmse")
+bestCL_ridge<- select_best(tuneCL_ridge, metric = "rmse")
+
+finalwf_HL_ridge <- finalize_workflow(wfHL_ridge, bestHL_ridge)
+finalwf_CL_ridge <- finalize_workflow(wfCL_ridge, bestCL_ridge)
+
+finalfit_HL_ridge <- last_fit(finalwf_HL_ridge, split = split_HL)
+finalfit_CL_ridge <- last_fit(finalwf_CL_ridge, split = split_CL)
+
+finalHL_Ridge_metrics <- collect_metrics(finalfit_HL_ridge)
+finalHL_Ridge_metrics 
+finalCL_Ridge_metrics <- collect_metrics(finalfit_CL_ridge)
+finalCL_Ridge_metrics
+
+HL_ridge <- extract_fit_parsnip(finalfit_HL_ridge)
+tidy(HL_ridge) %>% 
+  arrange(desc(abs(estimate))) %>% 
+  print()
+CL_ridge <- extract_fit_parsnip(finalfit_CL_ridge)
+tidy(CL_ridge) %>% 
+  arrange(desc(abs(estimate))) %>% 
+  print()
+
+```
+
+```{r Linear Regression}
+lm_spec <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+wfHL_lm <- workflow() %>%
+  add_recipe(rec_HL) %>%
+  add_model(lm_spec)
+wfCL_lm <- workflow() %>%
+  add_recipe(rec_CL) %>%
+  add_model(lm_spec)
+
+finalfit_HL_lm <- last_fit(
+  wfHL_lm,
+  split = split_HL
+)
+
+finalfit_CL_lm <- last_fit(
+  wfCL_lm,
+  split = split_CL
+)
+
+finalHL_LM_metrics <- collect_metrics(finalfit_HL_lm)
+finalHL_LM_metrics
+finalCL_LM_metrics <- collect_metrics(finalfit_CL_lm)
+finalCL_LM_metrics
+
+HL_lm <- extract_fit_parsnip(finalfit_HL_lm)
+tidy(HL_lm) %>%
+  arrange(desc(abs(estimate))) %>%
+  print()
+CL_lm <- extract_fit_parsnip(finalfit_CL_lm)
+tidy(CL_lm) %>%
+  arrange(desc(abs(estimate))) %>%
+  print()
+
+```
+
+```{r Benchmarking Lasso, Ridge, dan Linear Regression}
+library(tidyr)
+library(dplyr)
+
+df_metrics_HL_lasso <- finalHL_metrics %>%
+  mutate(Model = "Lasso",
+         Target = "Heating Load (Y1)")
+df_metrics_HL_ridge <- finalHL_Ridge_metrics %>%
+  mutate(Model = "Ridge",
+         Target = "Heating Load (Y1)")
+df_metrics_HL_lm <- finalHL_LM_metrics %>%
+  mutate(Model = "Linear Regression",
+         Target = "Heating Load (Y1)")
+
+df_metrics_CL_lasso <- finalCL_metrics %>%
+  mutate(Model = "Lasso",
+         Target = "Cooling Load (Y2)")
+df_metrics_CL_ridge <- finalCL_Ridge_metrics %>%
+  mutate(Model = "Ridge",
+         Target = "Cooling Load (Y2)")
+df_metrics_CL_lm <- finalCL_LM_metrics %>%
+  mutate(Model = "Linear Regression",
+         Target = "Cooling Load (Y2)")
+
+df_metrics_all <- bind_rows(
+  df_metrics_HL_lasso,
+  df_metrics_HL_ridge,
+  df_metrics_HL_lm,
+  df_metrics_CL_lasso,
+  df_metrics_CL_ridge,
+  df_metrics_CL_lm
+) %>%
+  select(Target, Model, .metric, .estimate) %>%
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  ) %>%
+  rename(
+    RMSE = rmse,
+    R_Squared = rsq
+  ) %>%
+  arrange(Target, Model)
+
+cat("\n--- RINGKASAN METRIK KINERJA KESELURUHAN ---\n")
+print(df_metrics_all)
+
+```
+
+```{r Data Frame Koefisien (Heating Load - Y1)}
+coef_HL_lasso <- tidy(model_HL) %>%
+  select(term, estimate) %>%
+  rename(Lasso_Coef = estimate)
+
+coef_HL_ridge <- tidy(HL_ridge) %>%
+  select(term, estimate) %>%
+  rename(Ridge_Coef = estimate)
+
+coef_HL_lm <- tidy(HL_lm) %>%
+  select(term, estimate) %>%
+  rename(Linear_Coef = estimate)
+
+df_coef_HL <- full_join(
+  coef_HL_lasso,
+  coef_HL_ridge,
+  by = "term"
+) %>%
+  full_join(
+    coef_HL_lm,
+    by = "term"
+  ) %>%
+  arrange(desc(abs(Lasso_Coef)))
+
+cat("\n--- PERBANDINGAN KOEFISIEN (HEATING LOAD Y1) ---\n")
+print(df_coef_HL)
+
+```
+
+```{r Data Frame Koefisien (Cooling Load - Y2)}
+coef_CL_lasso <- tidy(model_CL) %>%
+  select(term, estimate) %>%
+  rename(Lasso_Coef = estimate)
+
+coef_CL_ridge <- tidy(CL_ridge) %>%
+  select(term, estimate) %>%
+  rename(Ridge_Coef = estimate)
+
+coef_CL_lm <- tidy(CL_lm) %>%
+  select(term, estimate) %>%
+  rename(Linear_Coef = estimate)
+
+df_coef_CL <- full_join(
+  coef_CL_lasso,
+  coef_CL_ridge,
+  by = "term"
+) %>%
+  full_join(
+    coef_CL_lm,
+    by = "term"
+  ) %>%
+  arrange(desc(abs(Lasso_Coef)))
+
+cat("\n--- PERBANDINGAN KOEFISIEN (COOLING LOAD Y2) ---\n")
+print(df_coef_CL)
+
+```
+
+```{r Identifikasi Variabel yang dibuang Lasso}
+cat("\n--- VARIABEL Y1 DENGAN KOEFISIEN LASSO = 0 ---\n")
+df_coef_HL %>%
+  filter(!is.na(Lasso_Coef), Lasso_Coef == 0) %>%
+  print()
+
+cat("\n--- VARIABEL Y2 DENGAN KOEFISIEN LASSO = 0 ---\n")
+df_coef_CL %>%
+  filter(!is.na(Lasso_Coef), Lasso_Coef == 0) %>%
+  print()
+```
+
+```{r Stabilitas Lasso Regression (Heating Load - Y1)}
+ctrl_extract <- control_resamples(
+  extract = function(x) {
+    # Ambil modelnya, rapikan (tidy), dan kembalikan outputnya
+    extract_fit_parsnip(x) %>% tidy()
+  }
+)
+
+set.seed(123)
+cv_stability <- fit_resamples(
+  finalwf_HL,           # Workflow dengan penalti terbaik untuk Heating Load
+  resamples = cv_HL,    # 5-fold CV yang sama dengan sebelumnya
+  control = ctrl_extract
+)
+
+stability_results <- cv_stability %>%
+  select(id, .extracts) %>%
+  unnest(.extracts) %>%
+  unnest(.extracts) %>%                     # Membongkar dua lapis list
+  filter(term != "(Intercept)") %>%         # Mengabaikan Intercept (karena selalu ada)
+  mutate(is_selected = ifelse(estimate != 0, 1, 0)) %>% # Beri nilai 1 jika tidak dibuang (tidak 0)
+  group_by(term) %>%                        # Kelompokkan berdasarkan nama fitur
+  summarise(
+    selection_frequency = sum(is_selected), # Berapa kali dipilih dari 5 fold?
+    stability_percent = (selection_frequency / 5) * 100 # Persentase stabilitas
+  ) %>%
+  arrange(desc(stability_percent))          # Urutkan dari yang paling stabil
+print(stability_results)
+
+```
+
+```{r Stabilitas Lasso Regression (Cooling Load - Y2)}
+set.seed(123)
+cv_stabilityCL <- fit_resamples(
+  finalwf_CL,           # Workflow dengan penalti terbaik untuk Cooling Load
+  resamples = cv_CL,    # 5-fold CV yang sama dengan sebelumnya
+  control = ctrl_extract
+)
+
+stability_resultsCL <- cv_stabilityCL %>%
+  select(id, .extracts) %>%
+  unnest(.extracts) %>%
+  unnest(.extracts) %>%                     # Membongkar dua lapis list
+  filter(term != "(Intercept)") %>%         # Mengabaikan Intercept (karena selalu ada)
+  mutate(is_selected = ifelse(estimate != 0, 1, 0)) %>% # Beri nilai 1 jika tidak dibuang (tidak 0)
+  group_by(term) %>%                        # Kelompokkan berdasarkan nama fitur
+  summarise(
+    selection_frequency = sum(is_selected), # Berapa kali dipilih dari 5 fold?
+    stability_percent = (selection_frequency / 5) * 100 # Persentase stabilitas
+  ) %>%
+  arrange(desc(stability_percent))          # Urutkan dari yang paling stabil
+print(stability_resultsCL)
+
+```
+
+```{r Diagnostik Lasso Regression}
+library(ggplot2)
+# 1. PREDIKSI HEATING LOAD
+pred_HL <- collect_predictions(finalfit_HL)
+pred_HL <- pred_HL %>%
+  mutate(
+    residual = Y1 - .pred,
+    abs_residual = abs(residual)
+  )
+
+# 2. PREDIKSI COOLING LOAD
+pred_CL <- collect_predictions(finalfit_CL)
+pred_CL <- pred_CL %>%
+  mutate(
+    residual = Y2 - .pred,
+    abs_residual = abs(residual)
+  )
+
+# 3. ACTUAL VS PREDICTED
+ggplot(pred_HL, aes(x = Y1, y = .pred)) +
+  geom_point() +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Actual vs Predicted - Heating Load",
+    x = "Actual",
+    y = "Predicted"
+  ) +
+  theme_minimal()
+
+ggplot(pred_CL, aes(x = Y2, y = .pred)) +
+  geom_point() +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Actual vs Predicted - Cooling Load",
+    x = "Actual",
+    y = "Predicted"
+  ) +
+  theme_minimal()
+
+# 4. RESIDUAL VS PREDICTED
+ggplot(pred_HL, aes(x = .pred, y = residual)) +
+  geom_point() +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Residual vs Predicted - Heating Load",
+    x = "Predicted",
+    y = "Residual"
+  ) +
+  theme_minimal()
+
+ggplot(pred_CL, aes(x = .pred, y = residual)) +
+  geom_point() +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed"
+  ) +
+  labs(
+    title = "Residual vs Predicted - Cooling Load",
+    x = "Predicted",
+    y = "Residual"
+  ) +
+  theme_minimal()
+
+# 5. DISTRIBUSI RESIDUAL
+ggplot(pred_HL, aes(x = residual)) +
+  geom_histogram(bins = 20) +
+  labs(
+    title = "Distribusi Residual - Heating Load",
+    x = "Residual",
+    y = "Frekuensi"
+  ) +
+  theme_minimal()
+
+ggplot(pred_CL, aes(x = residual)) +
+  geom_histogram(bins = 20) +
+  labs(
+    title = "Distribusi Residual - Cooling Load",
+    x = "Residual",
+    y = "Frekuensi"
+  ) +
+  theme_minimal()
+# 6. TOP 10 ERROR
+failure_HL <- pred_HL %>%
+  arrange(desc(abs_residual))
+
+failure_CL <- pred_CL %>%
+  arrange(desc(abs_residual))
+# Tampilkan Top 10
+failure_HL %>%
+  select(Y1, .pred, residual, abs_residual) %>%
+  head(10)
+
+failure_CL %>%
+  select(Y2, .pred, residual, abs_residual) %>%
+  head(10)
+
+```
+
