@@ -1,0 +1,12 @@
+name: DashboardLassoRegression
+title: DashboardLassoRegression
+username: illarosyidah
+account: illarosyidah
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 18000964
+bundleId: 12638145
+url: https://illarosyidah.shinyapps.io/DashboardLassoRegression/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
